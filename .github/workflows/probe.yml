@@ -37,6 +37,10 @@ jobs:
         run: |
           set -u
           bad=""
+          # 測試模式：把叫貨的檢查網址換成一定 404 的路徑，走完整故障流程
+          if [ "${{ inputs.force_fail }}" = "true" ]; then
+            ORDERS_URL="${ORDERS_URL}/__force_fail__"
+          fi
 
           probe() {   # $1=名稱 $2=網址 $3=期望（200 或 any）
             local name="$1" url="$2" want="$3" code=""
@@ -96,12 +100,3 @@ jobs:
             -d "chat_id=${TG_CHAT}" --data-urlencode "text=🟢 服務恢復正常（外部監控已可連線）" >/dev/null
           echo "已通知恢復"
 
-      - name: 測試模式（故意失敗）
-        if: inputs.force_fail
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-            -d "chat_id=${TG_CHAT}" --data-urlencode "text=🧪 監控測試：這是一則人工觸發的測試通知，不是真的故障。" >/dev/null
-          echo "測試通知已送出"

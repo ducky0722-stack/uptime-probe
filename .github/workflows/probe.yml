@@ -22,6 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  GH_REPO: ${{ github.repository }}
   ORDERS_URL: https://orders.grownstudio.net/healthz
   ERP_URL: https://app.grownstudio.net/login
   LINE_HOST: https://line.grownstudio.net/line/webhook

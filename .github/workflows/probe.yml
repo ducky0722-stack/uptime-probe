@@ -79,6 +79,7 @@ jobs:
             echo "已有未結案的 incident，不重複通知"
             exit 0
           fi
+          gh label create incident --color B60205 --description "外部監控異常" 2>/dev/null || true
           gh issue create --label incident --title "對外服務異常 $(date -u '+%Y-%m-%d %H:%M UTC')" \
             --body "$(printf '從外部打不到以下服務：\n\n%b\n\n可能是：Mac 斷網、停電、休眠，或服務掛掉。' "$detail")" >/dev/null
           text=$(printf '🔴 對外服務異常\n\n%b可能原因：Mac 斷網、停電、休眠，或服務掛掉。\n\n這則由 GitHub 外部監控發出（不在你家）。' "$detail")

@@ -1,0 +1,106 @@
+name: uptime-probe
+
+# 外部監控：由 GitHub 的機器（不在你家）每 5 分鐘打一次對外網址。
+# Mac 斷網、停電、當機時本機 watchdog 也叫不出來，只有這一層能通知你。
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      force_fail:
+        description: "故意製造失敗（測試通知用）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: probe
+  cancel-in-progress: false
+
+env:
+  ORDERS_URL: https://orders.grownstudio.net/healthz
+  ERP_URL: https://app.grownstudio.net/login
+  LINE_HOST: https://line.grownstudio.net/line/webhook
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 檢查三個對外服務
+        id: check
+        run: |
+          set -u
+          bad=""
+
+          probe() {   # $1=名稱 $2=網址 $3=期望（200 或 any）
+            local name="$1" url="$2" want="$3" code=""
+            for i in 1 2 3; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$url" || echo 000)
+              if [ "$want" = "200" ] && [ "$code" = "200" ]; then return 0; fi
+              if [ "$want" = "any" ] && [ "$code" != "000" ] && [ "${code:0:1}" != "5" ]; then return 0; fi
+              sleep 10
+            done
+            bad="${bad}${name} 回應 ${code}（${url}）\n"
+            return 1
+          }
+
+          probe "叫貨系統" "$ORDERS_URL" 200 || true
+          probe "ERP"      "$ERP_URL"    200 || true
+          probe "LINE 通道" "$LINE_HOST"  any || true
+
+          if [ -n "$bad" ]; then
+            echo "status=down" >> "$GITHUB_OUTPUT"
+            printf "%b" "$bad" > /tmp/detail
+          else
+            echo "status=up" >> "$GITHUB_OUTPUT"
+          fi
+          cat /tmp/detail 2>/dev/null || true
+
+      - name: 失敗時開 incident 並通知
+        if: steps.check.outputs.status == 'down'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          detail=$(cat /tmp/detail)
+          open=$(gh issue list --label incident --state open --json number --jq 'length')
+          if [ "$open" != "0" ]; then
+            echo "已有未結案的 incident，不重複通知"
+            exit 0
+          fi
+          gh issue create --label incident --title "對外服務異常 $(date -u '+%Y-%m-%d %H:%M UTC')" \
+            --body "$(printf '從外部打不到以下服務：\n\n%b\n\n可能是：Mac 斷網、停電、休眠，或服務掛掉。' "$detail")" >/dev/null
+          text=$(printf '🔴 對外服務異常\n\n%b可能原因：Mac 斷網、停電、休眠，或服務掛掉。\n\n這則由 GitHub 外部監控發出（不在你家）。' "$detail")
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT}" --data-urlencode "text=${text}" >/dev/null
+          echo "已通知"
+
+      - name: 恢復時結案並通知
+        if: steps.check.outputs.status == 'up'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          num=$(gh issue list --label incident --state open --json number --jq '.[0].number // empty')
+          if [ -z "$num" ]; then echo "沒有未結案 incident，安靜"; exit 0; fi
+          gh issue close "$num" --comment "外部監控已恢復" >/dev/null
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT}" --data-urlencode "text=🟢 服務恢復正常（外部監控已可連線）" >/dev/null
+          echo "已通知恢復"
+
+      - name: 測試模式（故意失敗）
+        if: inputs.force_fail
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT}" --data-urlencode "text=🧪 監控測試：這是一則人工觸發的測試通知，不是真的故障。" >/dev/null
+          echo "測試通知已送出"
